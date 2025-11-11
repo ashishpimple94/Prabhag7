@@ -2,7 +2,7 @@
   "version": 2,
   "builds": [
     {
-      "src": "server.js",
+      "src": "xcel/server.js",
       "use": "@vercel/node",
       "config": {
         "maxDuration": 60,
@@ -13,11 +13,12 @@
   "routes": [
     {
       "src": "/api/(.*)",
-      "dest": "server.js"
+      "dest": "xcel/server.js"
     },
     {
       "src": "/(.*)",
-      "dest": "server.js"
+      "dest": "xcel/server.js"
     }
   ]
 }
+

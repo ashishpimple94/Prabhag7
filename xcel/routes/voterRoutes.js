@@ -87,10 +87,14 @@ router.post('/upload', (req, res, next) => {
     next();
   });
 }, asyncHandler(uploadExcelFile));
+// Specific routes must be defined before parameterized routes
 router.get('/search', asyncHandler(searchVoters)); // Search route (must be before /:id)
-router.get('/', asyncHandler(getAllVoters));
+router.get('/', asyncHandler(getAllVoters)); // Get all voters
+router.delete('/', asyncHandler(deleteAllVoters)); // Delete all voters
+
+// Parameterized route must be last to avoid conflicts
+// This will match /api/voters/:id but NOT /api/voters/upload or /api/voters/search
 router.get('/:id', asyncHandler(getVoterById));
-router.delete('/', asyncHandler(deleteAllVoters));
 
 export default router;
 

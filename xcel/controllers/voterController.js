@@ -926,13 +926,29 @@ export const getAllVoters = async (req, res) => {
 
 export const getVoterById = async (req, res) => {
   try {
-    const voter = await VoterData.findById(req.params.id);
+    const { id } = req.params;
+
+    // Validate MongoDB ObjectId format
+    // ObjectId must be 24 hex characters
+    if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid voter ID format',
+        message_mr: 'अमान्य वोटर ID प्रारूप',
+        error: 'ID must be a valid MongoDB ObjectId (24 hex characters)',
+        providedId: id,
+        hint: 'Make sure you are using a valid voter ID from the database'
+      });
+    }
+
+    const voter = await VoterData.findById(id);
 
     if (!voter) {
       return res.status(404).json({
         success: false,
         message: 'Voter not found',
         message_mr: 'वोटर नहीं मिला',
+        id: id
       });
     }
 
@@ -942,6 +958,19 @@ export const getVoterById = async (req, res) => {
     });
   } catch (error) {
     console.error('Get voter error:', error);
+    
+    // Handle specific MongoDB errors
+    if (error.name === 'CastError' || error.message.includes('Cast to ObjectId')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid voter ID format',
+        message_mr: 'अमान्य वोटर ID प्रारूप',
+        error: 'ID must be a valid MongoDB ObjectId',
+        providedId: req.params.id,
+        hint: 'Voter ID must be 24 hexadecimal characters. Make sure you are using the correct endpoint (e.g., /api/voters/upload for file upload, not /api/voters/:id)'
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Server error',

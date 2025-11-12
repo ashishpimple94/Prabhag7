@@ -11,16 +11,36 @@ const connectDB = async () => {
   // Check if MONGODB_URI is set
   if (!process.env.MONGODB_URI) {
     console.error('❌ MONGODB_URI is not set in environment variables');
-    console.error('📋 Please set MONGODB_URI in Render environment variables:');
+    console.error('📋 Please set MONGODB_URI in Vercel environment variables:');
     console.error('   Key: MONGODB_URI');
     console.error('   Value: mongodb+srv://Voterlist2:Test123@cluster0.ezzkjmw.mongodb.net/voterdata?retryWrites=true&w=majority');
     throw new Error('MONGODB_URI is not set in environment variables');
   }
 
+  // Clean and validate connection string
+  let mongoUri = process.env.MONGODB_URI.trim();
+  
+  // Remove quotes if present (common issue when copying from docs)
+  if ((mongoUri.startsWith('"') && mongoUri.endsWith('"')) || 
+      (mongoUri.startsWith("'") && mongoUri.endsWith("'"))) {
+    mongoUri = mongoUri.slice(1, -1).trim();
+    console.log('⚠️  Removed quotes from MONGODB_URI');
+  }
+  
+  // Validate connection string format
+  if (!mongoUri.startsWith('mongodb://') && !mongoUri.startsWith('mongodb+srv://')) {
+    console.error('❌ Invalid MONGODB_URI format');
+    console.error('📋 Current value (first 50 chars):', mongoUri.substring(0, 50));
+    console.error('📋 Expected format: mongodb+srv://username:password@cluster.mongodb.net/database?options');
+    throw new Error(`Invalid scheme, expected connection string to start with "mongodb://" or "mongodb+srv://". Got: ${mongoUri.substring(0, 20)}...`);
+  }
+
   // Log connection attempt (without exposing password)
-  const uriParts = process.env.MONGODB_URI.split('@');
+  const uriParts = mongoUri.split('@');
   const sanitizedUri = uriParts.length > 1 ? `mongodb+srv://***@${uriParts[1]}` : 'mongodb+srv://***';
   console.log('🔄 Attempting MongoDB connection to:', sanitizedUri);
+  console.log('📋 Connection string length:', mongoUri.length);
+  console.log('📋 Connection string starts with:', mongoUri.substring(0, 20));
 
   // If connection already exists and is ready, return it
   if (cached.conn && mongoose.connection.readyState === 1) {
@@ -53,7 +73,7 @@ const connectDB = async () => {
       maxPoolSize: opts.maxPoolSize
     });
 
-    cached.promise = mongoose.connect(process.env.MONGODB_URI, opts).then((mongoose) => {
+    cached.promise = mongoose.connect(mongoUri, opts).then((mongoose) => {
       console.log('✅ MongoDB Connected successfully to:', mongoose.connection.host);
       console.log('📊 Database:', mongoose.connection.name);
       console.log('🔌 Ready state:', mongoose.connection.readyState);

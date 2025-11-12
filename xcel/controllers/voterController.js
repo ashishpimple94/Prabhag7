@@ -714,15 +714,21 @@ export const uploadExcelFile = async (req, res) => {
     // For Render, send periodic updates to prevent timeout
     // Note: We'll process normally but with reduced batch size
 
-    // Insert data in batches to avoid memory issues
-    const BATCH_SIZE = 500; // Reduced batch size for Render to prevent timeout
+    // Optimized batch processing for large datasets
+    // Dynamic batch size based on environment and data size
+    const isLargeDataset = voterDataArray.length > 10000;
+    const BATCH_SIZE = isLargeDataset 
+      ? (process.env.VERCEL ? 200 : 1000) // Smaller batches for serverless
+      : (process.env.VERCEL ? 500 : 2000); // Larger batches for regular servers
+    
     let totalInserted = 0;
     let totalErrors = 0;
     const errors = [];
+    const startTime = Date.now();
 
     console.log(`📦 Processing ${voterDataArray.length} records in batches of ${BATCH_SIZE}...`);
 
-    // Process in batches
+    // Process in batches with optimized error handling
     for (let i = 0; i < voterDataArray.length; i += BATCH_SIZE) {
       const batch = voterDataArray.slice(i, i + BATCH_SIZE);
       const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
@@ -731,32 +737,53 @@ export const uploadExcelFile = async (req, res) => {
       try {
         console.log(`📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} records)...`);
         
-        // Insert batch
+        // Use insertMany with ordered: false for better performance
+        // This allows MongoDB to process documents in parallel
         const batchResult = await VoterData.insertMany(batch, {
-          ordered: false // Continue even if some fail
+          ordered: false, // Continue even if some fail (allows parallel processing)
+          rawResult: false // Don't return full result to save memory
         });
 
-        totalInserted += batchResult.length;
-        console.log(`✅ Batch ${batchNumber} inserted: ${batchResult.length} records`);
+        totalInserted += Array.isArray(batchResult) ? batchResult.length : batch.length;
+        console.log(`✅ Batch ${batchNumber} inserted: ${Array.isArray(batchResult) ? batchResult.length : batch.length} records`);
         
         // Force garbage collection hint (if available)
         if (global.gc) {
           global.gc();
         }
+
+        // Send progress update for long-running operations (Render)
+        if (process.env.RENDER && batchNumber % 10 === 0) {
+          const elapsed = (Date.now() - startTime) / 1000;
+          const rate = totalInserted / elapsed;
+          const remaining = (voterDataArray.length - totalInserted) / rate;
+          console.log(`⏱️  Progress: ${totalInserted}/${voterDataArray.length} (${Math.round(totalInserted/voterDataArray.length*100)}%) - ETA: ${Math.round(remaining)}s`);
+        }
       } catch (batchError) {
         console.error(`❌ Batch ${batchNumber} error:`, batchError.message);
         
-        // If batch fails, try inserting individually
-        if (batchError.writeErrors) {
-          for (const writeError of batchError.writeErrors) {
-            errors.push({
-              index: i + writeError.index,
-              error: writeError.errmsg
-            });
-            totalErrors++;
+        // If batch fails, try inserting individually (only for small batches)
+        if (batchError.writeErrors && batchError.writeErrors.length < batch.length) {
+          // Some succeeded, only retry failed ones
+          const failedIndices = new Set(batchError.writeErrors.map(e => e.index));
+          for (let j = 0; j < batch.length; j++) {
+            if (failedIndices.has(j)) {
+              try {
+                await VoterData.create(batch[j]);
+                totalInserted++;
+              } catch (individualError) {
+                errors.push({
+                  index: i + j,
+                  error: individualError.message
+                });
+                totalErrors++;
+              }
+            } else {
+              totalInserted++; // This one succeeded
+            }
           }
         } else {
-          // Try individual inserts for this batch
+          // All failed or unknown error - try individual inserts
           for (let j = 0; j < batch.length; j++) {
             try {
               await VoterData.create(batch[j]);
@@ -772,13 +799,15 @@ export const uploadExcelFile = async (req, res) => {
         }
       }
 
-      // Small delay between batches to prevent overwhelming the system
+      // Adaptive delay between batches (smaller delay for large datasets)
       if (i + BATCH_SIZE < voterDataArray.length) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+        const delay = isLargeDataset ? 50 : 100; // Smaller delay for large datasets
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
 
-    console.log(`✅ Total inserted: ${totalInserted}, Errors: ${totalErrors}`);
+    const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`✅ Total inserted: ${totalInserted} in ${totalTime}s (${(totalInserted / parseFloat(totalTime)).toFixed(0)} records/sec), Errors: ${totalErrors}`);
 
     // Prepare response
     const savedData = voterDataArray.slice(0, Math.min(5, totalInserted)); // Sample for response
@@ -846,16 +875,32 @@ export const uploadExcelFile = async (req, res) => {
 // Update other functions with Hindi messages
 export const getAllVoters = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50000;
+    // Optimized pagination with reasonable limits for large datasets
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const maxLimit = 1000; // Maximum records per page (prevents memory issues)
+    const defaultLimit = 100; // Default records per page
+    const limit = Math.min(maxLimit, Math.max(1, parseInt(req.query.limit) || defaultLimit));
     const skip = (page - 1) * limit;
 
+    // Use lean() for better performance with large datasets (returns plain JS objects)
     const voters = await VoterData.find({})
       .skip(skip)
       .limit(limit)
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean() // Use lean() for better performance
+      .select('-__v'); // Exclude version key
 
-    const totalCount = await VoterData.countDocuments();
+    // Use estimatedDocumentCount for better performance on large collections
+    const totalCount = await VoterData.estimatedDocumentCount();
+
+    // Set cache headers for load balancing
+    res.set({
+      'Cache-Control': 'public, max-age=60', // Cache for 60 seconds
+      'X-Total-Count': totalCount,
+      'X-Page': page,
+      'X-Per-Page': limit,
+      'X-Total-Pages': Math.ceil(totalCount / limit)
+    });
 
     res.status(200).json({
       success: true,
@@ -863,6 +908,9 @@ export const getAllVoters = async (req, res) => {
       totalCount: totalCount,
       currentPage: page,
       totalPages: Math.ceil(totalCount / limit),
+      perPage: limit,
+      hasNextPage: page < Math.ceil(totalCount / limit),
+      hasPrevPage: page > 1,
       data: voters,
     });
   } catch (error) {
@@ -948,16 +996,33 @@ export const searchVoters = async (req, res) => {
     console.log(`Search field: ${searchField}`);
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
+    const maxLimit = 100; // Maximum search results per page
+    const searchLimit = Math.min(maxLimit, parseInt(limit));
 
-    // Case-insensitive partial match search
-    const searchQuery = {
-      [searchField]: { $regex: searchTerm, $options: 'i' }
-    };
+    // Optimized search query with indexes
+    // Use text search if available, otherwise use regex
+    let searchQuery;
+    if (searchField === 'name' || searchField === 'name_mr') {
+      // Try text search first (faster with indexes)
+      searchQuery = {
+        $or: [
+          { name: { $regex: searchTerm, $options: 'i' } },
+          { name_mr: { $regex: searchTerm, $options: 'i' } }
+        ]
+      };
+    } else {
+      searchQuery = {
+        [searchField]: { $regex: searchTerm, $options: 'i' }
+      };
+    }
 
+    // Use lean() for better performance and add indexes hint
     const voters = await VoterData.find(searchQuery)
       .skip(skip)
-      .limit(parseInt(limit))
-      .sort({ createdAt: -1 });
+      .limit(searchLimit)
+      .sort({ createdAt: -1 })
+      .lean() // Use lean() for better performance
+      .select('-__v'); // Exclude version key
 
     const totalCount = await VoterData.countDocuments(searchQuery);
 

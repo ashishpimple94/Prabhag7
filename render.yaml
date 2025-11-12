@@ -16,4 +16,5 @@ services:
       - key: MAX_FILE_SIZE_MB
         value: 25
     healthCheckPath: /health
+    autoDeploy: true
 

@@ -35,11 +35,16 @@ const connectDB = async () => {
       serverSelectionTimeoutMS: 20000, // Increased for serverless (20 seconds)
       socketTimeoutMS: 45000, // How long to wait for socket timeout
       connectTimeoutMS: 20000, // Increased for serverless (20 seconds)
-      maxPoolSize: 1, // For serverless, use 1 connection to avoid connection pool issues
-      minPoolSize: 0, // Allow 0 connections when idle (serverless friendly)
+      // Optimized connection pooling for load balancing
+      maxPoolSize: process.env.VERCEL ? 1 : 10, // 1 for serverless, 10 for regular servers
+      minPoolSize: process.env.VERCEL ? 0 : 2, // 0 for serverless, 2 for regular servers
       maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
       retryWrites: true,
       w: 'majority',
+      // Additional optimizations for large datasets
+      readPreference: 'secondaryPreferred', // Use secondary for reads when available (load balancing)
+      readConcern: { level: 'majority' },
+      writeConcern: { w: 'majority', j: true },
     };
 
     console.log('📋 Connection options:', {

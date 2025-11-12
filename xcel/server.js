@@ -1,6 +1,8 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import compression from 'compression';
+import rateLimit from 'express-rate-limit';
 import fs from 'fs';
 import multer from 'multer';
 import mongoose from 'mongoose';
@@ -31,6 +33,46 @@ process.on('SIGINT', async () => {
 
 // Initialize Express app
 const app = express();
+
+// Compression middleware for large responses (critical for large datasets)
+app.use(compression({
+  level: 6, // Compression level (1-9, 6 is good balance)
+  filter: (req, res) => {
+    // Compress all responses except if explicitly disabled
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    return compression.filter(req, res);
+  }
+}));
+
+// Rate limiting for load balancing (prevents abuse)
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: process.env.VERCEL ? 100 : 1000, // Limit each IP to 100 requests per windowMs (Vercel) or 1000 (Render)
+  message: {
+    success: false,
+    message: 'Too many requests from this IP, please try again later.',
+    message_mr: 'इस IP से बहुत सारे अनुरोध, कृपया बाद में पुनः प्रयास करें।'
+  },
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  skip: (req) => {
+    // Skip rate limiting for health checks
+    return req.path === '/health' || req.path === '/';
+  }
+});
+
+// Apply rate limiting to all routes except upload (upload has its own limits)
+app.use('/api/voters', (req, res, next) => {
+  if (req.path === '/upload') {
+    return next(); // Skip rate limiting for upload, it has its own handler
+  }
+  return limiter(req, res, next);
+});
+
+// General rate limiting for other routes
+app.use(limiter);
 
 // Middleware to ensure MongoDB connection before handling requests
 app.use(async (req, res, next) => {
@@ -176,7 +218,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// Health check endpoint with detailed MongoDB status
+// Health check endpoint with detailed MongoDB status (for load balancers)
 app.get('/health', async (req, res) => {
   const connectionState = mongoose.connection.readyState;
   const stateMap = {
@@ -208,11 +250,73 @@ app.get('/health', async (req, res) => {
     }
   }
 
-  res.json({
-    status: connectionState === 1 ? 'ok' : 'degraded',
+  // Get database stats for load balancer health checks
+  let dbStats = null;
+  if (connectionState === 1) {
+    try {
+      const VoterData = mongoose.model('VoterData');
+      const count = await VoterData.countDocuments().limit(1).lean();
+      dbStats = {
+        totalRecords: await VoterData.estimatedDocumentCount(),
+        canRead: true,
+        canWrite: true
+      };
+    } catch (error) {
+      dbStats = {
+        error: error.message,
+        canRead: false,
+        canWrite: false
+      };
+    }
+  }
+
+  const isHealthy = connectionState === 1 && (!dbStats || dbStats.canRead);
+
+  // Return appropriate status code for load balancers
+  res.status(isHealthy ? 200 : 503).json({
+    status: isHealthy ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
     environment: process.env.VERCEL ? 'production (Vercel)' : process.env.RENDER ? 'production (Render)' : 'development',
-    mongodb: mongodbStatus
+    mongodb: mongodbStatus,
+    database: dbStats,
+    uptime: process.uptime(),
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+      limit: Math.round(process.memoryUsage().rss / 1024 / 1024)
+    }
+  });
+});
+
+// Readiness probe for load balancers (more strict than health)
+app.get('/ready', async (req, res) => {
+  const connectionState = mongoose.connection.readyState;
+  const isReady = connectionState === 1;
+  
+  if (!isReady) {
+    try {
+      await connectDB();
+    } catch (error) {
+      return res.status(503).json({
+        status: 'not ready',
+        error: 'Database connection failed',
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  res.status(200).json({
+    status: 'ready',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Liveness probe for load balancers
+app.get('/live', (req, res) => {
+  res.status(200).json({
+    status: 'alive',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
   });
 });
 

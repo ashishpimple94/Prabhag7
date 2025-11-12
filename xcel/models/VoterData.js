@@ -155,6 +155,16 @@ const voterDataSchema = new mongoose.Schema(
   }
 );
 
+// Add indexes for performance optimization (critical for large datasets)
+voterDataSchema.index({ name: 'text', name_mr: 'text' }); // Text search index
+voterDataSchema.index({ serialNumber: 1 }); // For serial number lookups
+voterDataSchema.index({ voterIdCard: 1 }); // For EPIC ID lookups
+voterDataSchema.index({ mobileNumber: 1 }); // For mobile number lookups
+voterDataSchema.index({ houseNumber: 1 }); // For house number lookups
+voterDataSchema.index({ createdAt: -1 }); // For sorting by creation date
+voterDataSchema.index({ AC_NO: 1, PART_NO: 1 }); // Compound index for constituency queries
+voterDataSchema.index({ name: 1, name_mr: 1 }); // Compound index for name searches
+
 const VoterData = mongoose.model('VoterData', voterDataSchema);
 
 export default VoterData;

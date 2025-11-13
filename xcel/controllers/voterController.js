@@ -907,17 +907,18 @@ export const getAllVoters = async (req, res) => {
 
     // Build query with optimizations
     let query = VoterData.find({})
-      .sort({ createdAt: -1 })
       .lean() // Use lean() for better performance (returns plain JS objects, not Mongoose documents)
-      .select('-__v') // Exclude version key
-      .maxTimeMS(30000); // 30 second timeout for query
+      .select('-__v'); // Exclude version key
     
     // Apply skip and limit only if not fetching all
     if (!fetchAll) {
-      query = query.skip(skip).limit(limit);
+      // For pagination, use sorting for consistent results
+      query = query.sort({ createdAt: -1 }).skip(skip).limit(limit).maxTimeMS(30000);
     } else {
-      // For fetching all, still set a reasonable timeout
-      query = query.maxTimeMS(60000); // 60 seconds for all records
+      // For fetching all records, skip sorting (very expensive for large datasets)
+      // This makes the query much faster for large datasets
+      query = query.maxTimeMS(120000); // 120 seconds timeout for all records (increased)
+      console.log('⚠️ Fetching all records without sort for better performance');
     }
 
     // Execute query with error handling and retry logic
